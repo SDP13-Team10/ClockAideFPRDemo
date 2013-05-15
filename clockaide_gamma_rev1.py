@@ -1,16 +1,46 @@
+# 5/7/13	Integrated data logging system with original keypad
+#		User login pending.
+
 import string,time,datetime,serial,re, os
+import sqlite3, usb, shutil, errno, subprocess		# Database integration
+
 from questionBank import QuestionBank
 #from ClockAideModes import *
 #from ClockAideHelpers import *
 
+#----------------------------------
+# Database initialization
+db = sqlite3.connect("/home/pi/ClockAideGamma/ClockAideDatabase/ClockAideDB")
+cursor = db.cursor()
+
+startTime = 0
+stopTime = 0
+sessionCount = 0
+sessionStart = 0
+
+#----------------------------------
+# Hardware initialization
+
 BaudRate = 9600
-keypadLocation = "/dev/ttyUSB0"
-motorLocation = "/dev/ttyACM0"
-databaseLocation = "/home/pi/ClockAideDatabase/ClockAideDB"
+keypadLocation = "/dev/ttyUSB0"	# Every time it's reconnected the index increases /dev/ttyUSB# use ls /dev to check
+motorLocation = "/dev/ttyACM0"  # Might depend on the plug /dev/ttyACM1 (Index reset to zero on new power up)
+databaseLocation = "/home/pi/ClockAideGamma/ClockAideDatabase/ClockAideDB"
 
 keypad = serial.Serial(keypadLocation,BaudRate)
 motor = serial.Serial(motorLocation,BaudRate)
 qBank = QuestionBank(databaseLocation)
+
+#----------------------------------
+# Quiz Mode parameters
+
+question = 0
+attempt = 0
+correct = 0
+incorrect = 0
+answer = 0
+
+
+
 
 currentTime = ""
 id = ""
@@ -47,7 +77,8 @@ COMMAND = {
 	'2'  : "WAKE_UP",\
 	'3'  : "GET_TIME", \
 	'4'  : "RESET", \
-	'5'  : "SPEAK_TIME"
+	'5'  : "SPEAK_TIME", \
+	'6'  : "EXIT"
 	}
 	
 command = {
@@ -101,7 +132,7 @@ def normal():
 	try:
 		print keypad.inWaiting()
 		comm = COMMAND[str(keypad.read())]		## use different method other than stuff dictionary
-		print "recieved" 
+		print "received" 
 		print comm
 		if comm == "SPEAK_TIME":
 			speakTime(nowHour(), nowMinute())
@@ -115,13 +146,72 @@ def normal():
 			print(motor.write(modeLookUp["check_id"]))
 			
 			return modes[1]						## return statements???
+		elif comm == "EXIT":
+			quit()
 		else:
 			return modes[0]
+			#return modes[3]	See read mode
 
 	except KeyError:
 		print "Error!!!"						## put some logging functionality
 		
 		return modes[0]
+
+# -------------------------------------
+# User Login
+def userLogin():
+ #global lockout
+ global id
+ #global admin
+
+ s.write('\xFE\x01')
+ s.write('\xFE\x0D')
+# s.write('User Login      Enter Lunch #:')
+ s.write('Enter Lunch #:')
+ user = int(raw_input("Enter your lunch number: "))
+
+ 
+ sql = "SELECT id FROM students WHERE id=?"
+ auth = cursor.execute(sql, [(user)])
+ userInput = str(user)
+ cursor.execute('''SELECT * FROM students WHERE id='''+userInput)
+ queryResult = cursor.fetchone()
+
+ if queryResult is None:
+ 	queryResult = [-1,"-1"]
+
+ if queryResult[0] == user:
+   print "Welcome " + queryResult[1]
+   print 'User authenticated. Starting ClockAide....'
+   s.write('\xFE\x01')
+   s.write('\xFE\x0C')
+   s.write('Welcome         ' + queryResult[1])		# Shows user name
+   #s.write('     User         Authenticated')
+   time.sleep(2)
+   id = user
+   #normal()
+   #modeSelect()		# Was switched back so that different users can log in
+			# Placed a call for this in Normal mode
+			# Turned off to allow login for Programming mode
+ 
+ elif lockout != 3:
+    lockout += 1
+    print 'Invalid lunch number. Please try again....'
+    s.write('\xFE\x01')
+    s.write('Login Failed.   Try again...')
+    time.sleep(1)
+    userLogin()
+
+ else:
+   print 'Maximum attempts reached. Returning to normal mode...'
+   s.write('\xFE\x01')
+   s.write('Maximum attempts reached....')
+   time.sleep(3)
+   s.write('\xFE\x01')
+   s.write('Returning to Normal Mode...')
+   time.sleep(1)
+   normal()
+# -------------------------------------
 
 def checkID():
 	
@@ -130,7 +220,12 @@ def checkID():
 	try:
 		id = keypad.read(3)
 		name = namesID[id]		## replace this with function to check input ID vs. database
-		if name:
+		sql = "SELECT id FROM students WHERE id=?"
+		auth = cursor.execute(sql, [(id)])
+		cursor.execute('''SELECT * FROM students WHERE id='''+ id)
+		queryResult = cursor.fetchone()
+		#if name:
+		if auth:
 			print(keypad.write(command["good"]))			## Sends "Correct" Code to Keypad
 			time.sleep(2)
 			print(keypad.write(name))			## Sends Student Name to Keypad
@@ -148,32 +243,95 @@ def checkID():
 		return modes[1]							## return statements???
 		
 def read():
+	global id
+	global question
+ 	global correct		
+	global incorrect
+	global attempt		
+	global sessionCount
+	global sessionStart
+	global stopTime
+	mode = modes[2]
+
+	question += 1
+	print question
+
+	sql = "SELECT * FROM students WHERE id=?"
+	user = cursor.execute(sql, [("1")])
+	start = time.ctime()				## Mark start time
+
 	print(keypad.write(modeLookUp["read"]))
 	print(motor.write(modeLookUp["read"]))
 	time.sleep(2)
 	qBank.generateTime()
 	print(motor.write(readModeTime(id)))		## send time to be displayed to motor
 	randomTime = qBank.getTimeTouple()
+	print randomTime				## Show time in terminal
 	#speakTime(randomTime[0],randomTime[1])
 	readTime = keypad.read(5)			## include some timeout logic
+	answer = readTime				## Latch user response
 
 # Check time entered for correctness and send appropriate signal.
 # Create a readtime function
 
 	if checkReadTime(readTime,qBank.getTimeString()):
+		correct += 1
+		print correct
+		print readTime		# Shows what was entered on the keypad
+
+		sql = "INSERT INTO studentResponses (sid,studentResponse) VALUES (?,?)" # Save user input
+		cursor.execute(sql, [(correct), (answer)])
+		db.commit()
+
 		print(keypad.write(command["good"]))
-		time.sleep(2)
+		time.sleep(3)
 		print(keypad.write(modeLookUp["normal"]))
 		print(motor.write(modeLookUp["normal"]))
+
+		stopTime = time.ctime()						# Save sessionLog
+		sql = "INSERT INTO sessionLog (id, sessionStartTime, sessionEndTime, type) VALUES (?,?,?,?)"
+		cursor.execute(sql, [(id), (start), (stopTime), (mode)]) # Need to figure out how to pull current user's ID (FK)
+    		db.commit()
+
 		return modes[0]
 	else:
+		incorrect += 1
+		print incorrect
+		print readTime		# Shows what was entered on the keypad
+
+		sql = "INSERT INTO studentResponses (sid,studentResponse) VALUES (?,?)" # Save user input
+		cursor.execute(sql, [(correct), (answer)])
+		db.commit()
+	
 		print(keypad.write(command["wrong"]))
 		time.sleep(2)
 		print(keypad.write(modeLookUp["normal"]))
 		print(motor.write(modeLookUp["normal"]))
+
+		stopTime = time.ctime()						# Save sessionLog
+		sql = "INSERT INTO sessionLog (id, sessionStartTime, sessionEndTime, type) VALUES (?,?,?,?)"
+		cursor.execute(sql, [(id), (start), (stopTime), (mode)]) # Need to figure out how to pull current user's ID (FK)
+    		db.commit()
 		return modes[0]
 
 def set():
+	global id
+	global question
+ 	global correct		
+	global incorrect
+	global attempt		
+	global sessionCount
+	global sessionStart
+	global stopTime
+	mode = modes[3]
+
+	question += 1
+	print question
+
+	sql = "SELECT * FROM students WHERE id=?"
+	user = cursor.execute(sql, [("1")])
+	start = time.ctime()				## Mark start time
+
 	print(keypad.write(modeLookUp["set"]))
 	print(motor.write(modeLookUp["set"]))
 	time.sleep(2)
@@ -184,7 +342,8 @@ def set():
 	randomTime = qBank.getTimeTouple()
 	speakTime(randomTime[0],randomTime[1])
 	motortime = qBank.getTimeString()
-
+	answer = motortime				## Latch user response
+	
 	try:
 
 		comm = COMMAND[str(keypad.read())]
@@ -194,18 +353,46 @@ def set():
 	
 		#else
 		
-		if senttime == motortime:
+		if senttime == motortime:				## Correct answer
+
+			correct += 1
+			print correct
+			print motortime		# Shows what was entered on the knobs
+						
+			sql = "INSERT INTO studentResponses (sid,studentResponse) VALUES (?,?)" # Save user input
+			cursor.execute(sql, [(correct), (answer)])
+			db.commit()
+
 			print(keypad.write(command["good"]))
 			time.sleep(2)
 			print(keypad.write(modeLookUp["normal"]))
 			print(motor.write(modeLookUp["normal"]))
+			
+			stopTime = time.ctime()		# Save sessionLog
+			sql = "INSERT INTO sessionLog (id, sessionStartTime, sessionEndTime, type) VALUES (?,?,?,?)"
+			cursor.execute(sql, [(id), (start), (stopTime), (mode)]) # Need to figure out how to pull current user's ID (FK)
+    			db.commit()
+
 			return modes[0]
 			
-		else:
+		else:							## Incorrect answer
+			incorrect += 1
+			print incorrect
+			print motortime		# Shows what was entered on the keypad
+	
+			sql = "INSERT INTO studentResponses (sid,studentResponse) VALUES (?,?)" # Save user input
+			cursor.execute(sql, [(correct), (answer)])
+			db.commit()
+
 			print(keypad.write(command["wrong"]))
 			time.sleep(2)
 			print(keypad.write(modeLookUp["normal"]))
 			print(motor.write(modeLookUp["normal"]))
+
+			stopTime = time.ctime()						# Save sessionLog
+			sql = "INSERT INTO sessionLog (id, sessionStartTime, sessionEndTime, type) VALUES (?,?,?,?)"
+			cursor.execute(sql, [(id), (start), (stopTime), (mode)]) # Need to figure out how to pull current user's ID (FK)
+	    		db.commit()
 			return modes[0]
 
 	except KeyError:
