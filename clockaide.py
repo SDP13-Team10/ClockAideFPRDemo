@@ -4,8 +4,8 @@ from questionBank import QuestionBank
 #from ClockAideHelpers import *
 
 BaudRate = 9600
-keypadLocation = "/dev/ttyUSB0"
-motorLocation = "/dev/ttyACM0"
+keypadLocation = "/dev/ttyUSB7"
+motorLocation = "/dev/ttyUSB1"
 databaseLocation = "/home/pi/ClockAideDatabase/ClockAideDB"
 
 keypad = serial.Serial(keypadLocation,BaudRate)
